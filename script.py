@@ -1,15 +1,16 @@
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 import psycopg2
 import secrets
 import datetime
 import os
 import requests
+from jose import JWTError, jwt
 
 app = FastAPI()
-security = HTTPBasic()
+token_auth_scheme = HTTPBearer()
 
 # CORS
 app.add_middleware(
@@ -20,7 +21,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Config do banco PostgreSQL
+# Config
 DB_CONFIG = {
     "dbname": "fastapi_db",
     "user": "fastapi_user",
@@ -29,11 +30,14 @@ DB_CONFIG = {
     "port": 5434
 }
 MAX_REQUESTS_PER_MONTH = 100
+JWT_SECRET = "super-secret-key"
+JWT_ALGORITHM = "HS256"
+JWT_EXPIRATION_MINUTES = 60
 
+# Banco
 def get_db_conn():
     return psycopg2.connect(**DB_CONFIG)
 
-# Inicializa o banco
 def init_db():
     with get_db_conn() as conn:
         with conn.cursor() as cur:
@@ -47,22 +51,55 @@ def init_db():
             ''')
         conn.commit()
 
-# Autenticação e limitação mensal
-def get_current_user(credentials: HTTPBasicCredentials = Depends(security)):
-    email = credentials.username
-    password = credentials.password
+# JWT helpers
+def create_token(email: str):
+    expiration = datetime.datetime.utcnow() + datetime.timedelta(minutes=JWT_EXPIRATION_MINUTES)
+    payload = {"sub": email, "exp": expiration}
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+def verify_token(token: str):
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        return payload["sub"]
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Token inválido ou expirado")
+
+# Models
+class Prompt(BaseModel):
+    message: str
+
+class LoginData(BaseModel):
+    email: str
+    password: str
+
+token_auth_scheme = HTTPBearer()
+
+# Auth com JWT
+@app.post("/login")
+def login(data: LoginData):
+    with get_db_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT password FROM users WHERE email = %s", (data.email,))
+            row = cur.fetchone()
+            if not row or not secrets.compare_digest(data.password, row[0]):
+                raise HTTPException(status_code=401, detail="Credenciais inválidas")
+    token = create_token(data.email)
+    return {"access_token": token}
+
+# Dependência de segurança
+def get_current_user(token: HTTPAuthorizationCredentials = Depends(token_auth_scheme)):
+    email = verify_token(token.credentials)
+    today = datetime.date.today()
+    first_day = today.replace(day=1)
 
     with get_db_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT password, request_count, last_reset FROM users WHERE email = %s", (email,))
+            cur.execute("SELECT request_count, last_reset FROM users WHERE email = %s", (email,))
             row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=401, detail="Usuário não encontrado")
 
-            if not row or not secrets.compare_digest(password, row[0]):
-                raise HTTPException(status_code=401, detail="Credenciais inválidas")
-
-            request_count, last_reset = row[1], row[2]
-            today = datetime.date.today()
-            first_day = today.replace(day=1)
+            request_count, last_reset = row
 
             if last_reset != first_day:
                 cur.execute("UPDATE users SET request_count = 0, last_reset = %s WHERE email = %s", (first_day, email))
@@ -75,11 +112,7 @@ def get_current_user(credentials: HTTPBasicCredentials = Depends(security)):
         conn.commit()
     return email
 
-# Modelo de entrada
-class Prompt(BaseModel):
-    message: str
-
-# Endpoint de geração
+# Geração
 @app.post("/generate")
 def generate_response(prompt: Prompt, user: str = Depends(get_current_user)):
     instruction = (
@@ -101,7 +134,7 @@ def generate_response(prompt: Prompt, user: str = Depends(get_current_user)):
     data = response.json()
     return {"response": data.get("response", "")}
 
-# Usuários manuais
+# Seed
 def seed_users():
     users = [
         ("aluno1@escola.edu", "w.12345678901"),
@@ -119,7 +152,7 @@ def seed_users():
                 """, (email, password, today))
         conn.commit()
 
-# Inicialização
+# Init
 try:
     init_db()
     seed_users()
