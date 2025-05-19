@@ -73,7 +73,7 @@ def generate_response(prompt: Prompt, user: str = Depends(get_current_user)):
     full_prompt = instruction + prompt.message
 
     response = requests.post("http://localhost:11434/api/generate", json={
-        "model": "llama3",
+        "model": "llama3.1",
         "prompt": full_prompt,
         "stream": False
     })
