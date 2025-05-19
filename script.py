@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, Request
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel
@@ -11,7 +11,6 @@ import requests
 app = FastAPI()
 security = HTTPBasic()
 
-# Allow frontend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -20,7 +19,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Database init
 DB_PATH = "users.db"
 MAX_REQUESTS_PER_MONTH = 100
 
@@ -35,7 +33,6 @@ def init_db():
             )
         ''')
 
-# Auth check
 def get_current_user(credentials: HTTPBasicCredentials = Depends(security)):
     email = credentials.username
     password = credentials.password
@@ -47,7 +44,6 @@ def get_current_user(credentials: HTTPBasicCredentials = Depends(security)):
         request_count, last_reset = row[1], row[2]
         today = datetime.date.today()
 
-        # Reset monthly count
         if last_reset != str(today.replace(day=1)):
             conn.execute("UPDATE users SET request_count = 0, last_reset = ? WHERE email = ?", (str(today.replace(day=1)), email))
             request_count = 0
@@ -58,9 +54,9 @@ def get_current_user(credentials: HTTPBasicCredentials = Depends(security)):
         conn.execute("UPDATE users SET request_count = request_count + 1 WHERE email = ?", (email,))
         return email
 
-# Model
 class Prompt(BaseModel):
-    message: str
+    historico: list  # [{"autor": "Usuário", "texto": "..."}, ...]
+    mensagem: str
 
 @app.post("/generate")
 def generate_response(prompt: Prompt, user: str = Depends(get_current_user)):
@@ -70,7 +66,12 @@ def generate_response(prompt: Prompt, user: str = Depends(get_current_user)):
         "Sempre incentive o raciocínio do aluno e evite dar a resposta diretamente logo de cara.\n\n"
     )
 
-    full_prompt = instruction + prompt.message
+    contexto = ""
+    for msg in prompt.historico:
+        contexto += f"{msg['autor']}: {msg['texto']}\n"
+    contexto += f"Usuário: {prompt.mensagem}\nIA:"
+
+    full_prompt = instruction + contexto
 
     response = requests.post("http://localhost:11434/api/generate", json={
         "model": "llama3",
@@ -84,8 +85,6 @@ def generate_response(prompt: Prompt, user: str = Depends(get_current_user)):
     data = response.json()
     return {"response": data.get("response", "")}
 
-
-# Usuários cadastrados manualmente
 def seed_users():
     users = [
         ("aluno1@escola.edu", "w.12345678901"),
@@ -97,7 +96,6 @@ def seed_users():
             conn.execute("INSERT OR IGNORE INTO users (email, password, request_count, last_reset) VALUES (?, ?, 0, ?)",
                          (email, password, today))
 
-# Inicializa banco
 if not os.path.exists(DB_PATH):
     init_db()
     seed_users()
