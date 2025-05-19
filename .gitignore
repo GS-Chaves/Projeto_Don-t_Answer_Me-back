@@ -1,0 +1,27 @@
+# Ambientes virtuais
+venv/
+Lib/
+Scripts/
+
+# PyCharm
+.idea/
+
+# Cache do Python
+__pycache__/
+*.py[cod]
+
+# Banco de dados local
+*.db
+
+# Logs
+*.log
+
+# Arquivos temporários
+*.swp
+*~
+
+# Node
+node_modules/
+
+# Variáveis de ambiente
+.env
